@@ -1,0 +1,158 @@
+---
+title: "Human Activity Recognition: Predicting the Quality of Movements"
+author: "Emily Petrie"
+date: "10/20/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+A plethora of wearable technologies have emerged all designed to monitor and report a user's movements. Rarely, however, do these technologies report how well users perform a movement. The purpose of this report is to build a model off of a robust human activity recognition dataset which predicts the quality of a movement (in this case, bicep curls) that a user performs, based on information reported by wearable devices.
+
+## Preparing the Data
+Both training and validation dataset were provided. The first step we will take is to partition the training data into yet another training and testing set. The latter dataset will be used to evaluate the efficacy of two different models trained on the former: the first a decision tree model, and the second a random forest model. 
+
+```{r packages, include = F}
+library(caret)
+library(rattle)
+library(randomForest)
+library(reshape2)
+library(dplyr) 
+```
+
+```{r partition}
+set.seed(10202019)
+
+#load training data 
+train <- read.csv("pml-training.csv")
+
+#break out training dataset into additional training and testing subsets 
+inTrain <- createDataPartition(y = train$classe, p = 0.6, list = F)
+subTrain <- train[inTrain, ]
+subTest <- train[-inTrain, ]
+```
+
+
+## Selecting Predictors 
+
+Next, we will identify which variables will be used to predict for the movement class variable which is the variable of interest. 
+First, we remove variables with little to no variation. 
+
+```{r nsv}
+nsv <- nearZeroVar(subTrain, saveMetrics = F)
+subTrain2 <- subTrain[,-nsv]
+```
+
+Next, we will remove variables that will logically not be useful for predicting movement class. 
+
+```{r log}
+subTrain3 <- subTrain2 %>% 
+      select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp))
+```
+
+Next, we will remove variables that contain too many NAs (arbitrarily defined as more than 20% of values).
+
+```{r na}
+remove <- c()
+for(i in 1:ncol(subTrain3)){
+  if(sum(is.na(subTrain3[,i]))/nrow(subTrain3) >= 0.2){
+    remove <- c(remove, colnames(subTrain3)[i])
+  }
+}
+
+indx <- match(remove, names(subTrain3))
+subTrain4 <- subTrain3[,-indx]
+```
+
+Finally, we are going to look at whether or not there are variables in the data that are highly correlated with each other - meaning there is little value in using both to make predictions. Based on the correlation matrix below, there do seem to be some highly correlated pairs. 
+
+```{r corr}
+corrs <- cor(subTrain4[sapply(subTrain4, is.numeric)])
+corrs_viz <- melt(corrs)
+qplot(x = Var1, y = Var2, data = corrs_viz, fill = value, geom = "tile") +
+  scale_fill_gradient2(limits = c(-1, 1)) +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0))
+```
+
+For each pair of highly correlated variables, we will remove the variable with the largest mean absolute correlation (i.e. the one that is most highly correlated with the rest of the dataset). 
+
+```{r redundant}
+redundant <- findCorrelation(corrs, cutoff = .90)
+subTrain5 <- subTrain4[,-redundant]
+```
+
+Before proceeding, we must replicate all of the above steps on the testing dataset. 
+
+```{r repilcate1}
+subTest2 <- subTest[,-nsv]
+subTest3 <- subTest2 %>% 
+  select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp))
+indx <- match(remove, names(subTest3))
+subTest4 <- subTest3[,-indx]
+subTest5 <- subTest4[,-redundant]
+```
+
+While we're at it - we can do the same for the final testing (i.e. validation) dataset. 
+
+```{r repilcate2}
+validate <- read.csv("pml-testing.csv") 
+validate2 <- validate[-nsv]
+validate3 <- validate2 %>% 
+  select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp))
+indx <- match(remove, names(validate3))
+validate4 <- validate3[,-indx]
+validate5 <- validate4[,-redundant]
+
+```
+
+## Generating Models
+
+First we train a decision tree model on the data. 
+```{r dec}
+modDecTree <- train(classe ~., data = subTrain5, method = "rpart")
+fancyRpartPlot(modDecTree$finalModel)
+```
+
+The second model we train will be a random forest model. 
+
+```{r ran}
+modRandFor <- randomForest(classe ~. , data = subTrain5)
+```
+
+## Generating Predictions 
+
+Using the models trained above and our testing dataset (not to be confused with the final testing dataset), we can generate predicted values of the movement class variable.
+
+```{r pred}
+predsDecTree <- predict(modDecTree, subTest5)
+
+predsRandFor <- predict(modRandFor, subTest5)
+```
+
+## Comparing Model Accuracy 
+
+The confusion matrices below indicate that the random forest model does a much better job accurately predicting movement class compared to the decision tree model. This is born out by the calcuclated sensitivity, specificity, and accuracy measures as well (the decision tree model managed a measly 49.78% accuracy measure while the random forest model predicted with an impressive 99.67% accuracy. This is not surprising, since the random forest method is designed to aggregate the results of multiple decision trees into one prediction.
+
+```{r compare}
+confusionMatrix(predsDecTree, subTest5$classe)
+
+confusionMatrix(predsRandFor, subTest5$classe)
+```
+
+## Model Application
+
+Since we trained the random forest model on a separate data set from that which it was tested on - it is reasonable to assume that the out-of-sample error is going to approximate the 99.67% accuracy rate just observed.
+
+The final step in our analysis is to run the model selected on the validation dataset. 
+
+```{r final}
+predsRandFor_val <- predict(modRandFor, validate5)
+```
+
+```{r show, include = F}
+head(predsRandFor_val)
+```
